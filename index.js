@@ -8,13 +8,14 @@ const request = require('request'),
     dataExp = /window\._sharedData\s?=\s?({.+);<\/script>/;
 
 
-var scrape = function(html) {
+const parse = function(html) {
+    let json;
     try {
-        var dataString = html.match(dataExp)[1];
-        var json = JSON.parse(dataString);
+        let dataString = html.match(dataExp)[1];
+        json = JSON.parse(dataString);
     }
     catch(e) {
-        if (process.env.NODE_ENV != 'production') {
+        if (process.env.NODE_ENV !== 'production') {
             console.error('The HTML returned from instagram was not suitable for scraping');
         }
         return null
@@ -24,7 +25,7 @@ var scrape = function(html) {
 };
 
 
-var Instagram = function (options) {
+const Instagram = function (options) {
     const self = this;
 
     this._config = {};
@@ -33,50 +34,116 @@ var Instagram = function (options) {
         cache : {
             prefix : 'ig-',
             isIgnore : false,
+            isRequestErrorCover : false,
             ttl : 60 * 30, // 30 min
             tmpDir : null
         }
     }, options);
 
+    this._cache = this.__cache();
+
     if(!this._config.cache.isIgnore) {
-        this._cache = new CachemanFile({
+        this._cachemanInstance = new CachemanFile({
             tmpDir: this._config.tmpDir
         });
     }
 };
 
-Instagram.prototype._request = function(id, uri, callback){
+Instagram.prototype.__cache = function() {
     const self = this;
-    const req = function(callback){
-        request(uri, callback);
-    };
-    const key = this._config.cache.prefix + id;
 
-    if(!this._cache || this._config.cache.isIgnore){
-        req(callback);
-        return;
-    }
-
-    this._cache.get(key, function(err, value){
-        if (err) {
-            callback(err);
-            return;
-        }
-
-        if(value === null){
-            req(function(reqErr, response, body){
-                if (!reqErr && response.statusCode === 200) {
-                    self._cache.set(key, response, self._config.cache.ttl, function (err, value) {
-                        callback(err, response, body);
+    return {
+        get: id => new Promise((resolve, reject) => {
+            self._cachemanInstance.get(self._config.cache.prefix + id, (err, value) => {
+                if (err) {
+                    reject(err);
+                } else if (value === null) {
+                    reject({
+                        reason : 'Nothing'
+                    });
+                } else if (value.expire < Date.now()) {
+                    reject({
+                        reason : 'Expired',
+                        value : value.data
                     });
                 } else {
-                    callback(reqErr);
+                    resolve(value);
                 }
             });
+        }),
+        set: (id, val) => new Promise((resolve, reject) => {
+            const cachemanTtl = self._config.cache.isRequestErrorCover ? (self._config.cache.ttl * 1000) : self._config.cache.ttl;
+            const value = {
+                data: val,
+                expire: Date.now() + self._config.cache.ttl
+            };
 
-        } else {
-            callback(null, value, value.body);
-        }
+            self._cachemanInstance.set(self._config.cache.prefix + id, value, cachemanTtl, (err, value) => {
+                if (err) {
+                    reject(err);
+                } else {
+                    resolve(value);
+                }
+            });
+        })
+    }
+};
+
+Instagram.prototype._request = function(id, uri){
+    const self = this;
+    const req = function(){
+        return new Promise((resolve, reject)=>{
+            const callback = (reqErr, response, body)=>{
+                if (!reqErr && response.statusCode === 200){
+                    resolve(response);
+                } else {
+                    reject(reqErr);
+                }
+            };
+
+            const options = {
+                url : uri,
+                // headers : {
+                //     'User-Agent' : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36'
+                // }
+            };
+
+            request(options, callback);
+        });
+    };
+
+    return (!this._cache || this._config.cache.isIgnore) ? req() : new Promise((resolve, reject) => {
+        this._cache.get(id)
+            .catch((cacheErr) => {
+                if(cacheErr.reason === 'Nothing' || cacheErr.reason === 'Expired'){
+                    req()
+                        .then((response) => {
+                            return self._cache.set(id, response)
+                                .then(r => {
+                                    // console.log('--')
+                                    resolve(response);
+                                })
+                            ;
+                        })
+                        .catch((reqErr) => {
+                            // console.log('1--')
+                            if(this._config.cache.isRequestErrorCover && cacheErr.value){
+                                // console.log('2--')
+                                resolve(cacheErr.value);
+                            } else {
+                                // console.log('3--', reqErr)
+                                reject(reqErr);
+                            }
+                        })
+                    ;
+                } else {
+                    reject(cacheErr);
+                }
+            })
+            .then(value => {
+                resolve(value);
+            })
+        ;
     });
 };
 
@@ -120,54 +187,58 @@ Instagram.prototype.scrapeTagPage = function(tag){
     return new Promise(function(resolve, reject){
         if (!tag) return reject(new Error('Argument "tag" must be specified'));
 
-        self._request('tag-'+tag, listURL + tag, function(err, response, body){
-            if (err) return reject(err);
+        tag = encodeURI(tag);
 
-            var data = scrape(body)
+        self._request('tag-'+tag, listURL + tag)
+            .then((response) => {
 
-            if(data &&
-                data.entry_data &&
-                data.entry_data.TagPage
-            ) {
-                var media = (function(TagPage) {
-                    if (TagPage.graphql &&
-                        TagPage.graphql.hashtag &&
-                        TagPage.graphql.hashtag.edge_hashtag_to_media
-                    ) {
-                        var model = TagPage.graphql.hashtag.edge_hashtag_to_media
+                const data = parse(response.body);
 
-                        model.edges = model.edges.map(function(item){
-                            item = item.node
-                            item.code = item.shortcode
-                            item.caption = item.edge_media_to_caption.edges[0].node.text
-                            item.comment = item.edge_media_to_comment
-                            item.liked_by = item.edge_liked_by
-                            return item
-                        })
+                if(data &&
+                    data.entry_data &&
+                    data.entry_data.TagPage
+                ) {
+                    const media = (function(TagPage) {
+                        if (TagPage.graphql &&
+                            TagPage.graphql.hashtag &&
+                            TagPage.graphql.hashtag.edge_hashtag_to_media
+                        ) {
+                            const model = TagPage.graphql.hashtag.edge_hashtag_to_media;
 
-                        return {
-                            count: model.count,
-                            nodes: model.edges,
-                            edges: model.edges
-                        };
-                    }
-                    else {
-                        TagPage.tag.media.edges = TagPage.tag.media.edges || TagPage.tag.media.nodes
-                        return TagPage.tag.media
-                    }
-                })(data.entry_data.TagPage[0]);
+                            model.edges = model.edges.map(function(item){
+                                item = item.node;
+                                item.code = item.shortcode;
+                                item.caption = item.edge_media_to_caption.edges.length ? item.edge_media_to_caption.edges[0].node.text : '';
+                                item.comment = item.edge_media_to_comment;
+                                item.liked_by = item.edge_liked_by;
+                                return item
+                            });
 
-                resolve({
-                    total: media.count,
-                    count: media.nodes.length,
-                    media: media.edges
-                });
-            }
-            else {
-                reject(new Error('Error scraping tag page "' + tag + '"'));
-            }
-        })
-    });
+                            return {
+                                count: model.count,
+                                nodes: model.edges,
+                                edges: model.edges
+                            };
+                        }
+                        else {
+                            TagPage.tag.media.edges = TagPage.tag.media.edges || TagPage.tag.media.nodes;
+                            return TagPage.tag.media
+                        }
+                    })(data.entry_data.TagPage[0]);
+
+                    resolve({
+                        total: media.count,
+                        count: media.nodes.length,
+                        media: media.edges
+                    });
+                } else {
+                    reject(new Error('Error scraping tag page "' + tag + '"'));
+                }
+
+            })
+        ;
+
+    })
 };
 
 Instagram.prototype.scrapePostPage = function(code){
@@ -176,15 +247,16 @@ Instagram.prototype.scrapePostPage = function(code){
     return new Promise(function(resolve, reject){
         if (!code) return reject(new Error('Argument "code" must be specified'));
 
-        self._request('post-'+code, postURL + code, function(err, response, body){
-            var data = scrape(body);
-            if (data) {
-                resolve(data.entry_data.PostPage[0].graphql.shortcode_media); 
-            }
-            else {
-                reject(new Error('Error scraping post page "' + code + '"'));
-            }
-        });
+        return self._request('post-'+code, postURL + code)
+            .then(function(err, response, body){
+                const data = parse(body);
+                if (data) {
+                    resolve(data.entry_data.PostPage[0].graphql.shortcode_media);
+                } else {
+                    reject(new Error('Error scraping post page "' + code + '"'));
+                }
+            })
+        ;
     });
 };
 
@@ -194,16 +266,16 @@ Instagram.prototype.scrapeLocationPage = function(id){
     return new Promise(function(resolve, reject){
         if (!id) return reject(new Error('Argument "id" must be specified'));
 
-        self._request('loc-'+id, locURL + id, function(err, response, body){
-            var data = scrape(body);
-
-            if (data) {
-                resolve(data.entry_data.LocationsPage[0].location);
-            }
-            else {
-                reject(new Error('Error scraping location page "' + id + '"'));
-            }
-        });
+        return self._request('loc-'+id, locURL + id)
+            .then(function(err, response, body){
+                const data = parse(body);
+                if (data) {
+                    resolve(data.entry_data.LocationsPage[0].location);
+                } else {
+                    reject(new Error('Error scraping location page "' + id + '"'));
+                }
+            })
+        ;
     });
 };
 

@@ -6,3 +6,4 @@ Thumbs.db
 npm-debug.log
 .env
 tmp/*
+t.js
