@@ -97,7 +97,7 @@ Instagram.prototype._request = function(id, uri){
                 if (!reqErr && response.statusCode === 200){
                     resolve(response);
                 } else {
-                    reject(reqErr);
+                    reject(new Error(`Status code is ${response.statusCode}`));
                 }
             };
 
@@ -114,6 +114,9 @@ Instagram.prototype._request = function(id, uri){
 
     return (!this._cache || this._config.cache.isIgnore) ? req() : new Promise((resolve, reject) => {
         this._cache.get(id)
+            .then(value => {
+                resolve(value);
+            })
             .catch((cacheErr) => {
                 if(cacheErr.reason === 'Nothing' || cacheErr.reason === 'Expired'){
                     req()
@@ -139,9 +142,6 @@ Instagram.prototype._request = function(id, uri){
                 } else {
                     reject(cacheErr);
                 }
-            })
-            .then(value => {
-                resolve(value);
             })
         ;
     });
