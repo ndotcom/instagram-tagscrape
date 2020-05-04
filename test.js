@@ -1,13 +1,13 @@
-var mocha   = require('mocha'),
+const mocha   = require('mocha'),
     assert  = require('chai').assert,
     Instagram     = require('./index');
 
-var nock = require("nock");
-var api = nock("https://www.instagram.com").persist()
+const nock = require("nock");
+const api = nock("https://www.instagram.com").persist()
     .get("/explore/tags/nrkvalg").replyWithFile(200, __dirname + '/fixtures/tagPage.html')
     .get(/\/p\/\w+/).replyWithFile(200, __dirname + '/fixtures/postPage.html')
     .get(/\/explore\/locations\/\d+/).replyWithFile(200, __dirname + '/fixtures/locationPage.html');
-var ig = new Instagram()
+const ig = new Instagram();
 
 describe('instagram-tagscrape', function(){
     it('should throw error when called with missing tag argument', function(done){

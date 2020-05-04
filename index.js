@@ -1,4 +1,4 @@
-const request = require('request'),
+const https = require('https'),
     extend = require('extend'),
     Promise = require('bluebird'),
     CachemanFile = require('cacheman-file'),
@@ -17,6 +17,8 @@ const parse = function(html) {
     catch(e) {
         if (process.env.NODE_ENV !== 'production') {
             console.error('The HTML returned from instagram was not suitable for scraping');
+        } else {
+            throw new Error('The HTML returned from instagram was not suitable for scraping');
         }
         return null
     }
@@ -93,22 +95,26 @@ Instagram.prototype._request = function(id, uri){
     const self = this;
     const req = function(){
         return new Promise((resolve, reject)=>{
-            const callback = (reqErr, response, body)=>{
-                if (!reqErr && response.statusCode === 200){
-                    resolve(response);
+            const callback = res => {
+                if(res.statusCode !== 200) {
+                    reject(new Error('Status code is not 200'));
                 } else {
-                    reject(new Error(`Status code is ${response.statusCode}`));
+                    let resData = '';
+
+                    res
+                        .on('data', d => {
+                            resData += d.toString();
+                        })
+                        .on('end', d => {
+                            resolve(resData);
+                        })
+                    ;
                 }
             };
 
-            const options = {
-                url : uri,
-                // headers : {
-                //     'User-Agent' : 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/68.0.3440.106 Safari/537.36'
-                // }
-            };
-
-            request(options, callback);
+            https.get(uri, callback).on('error', (e) => {
+                reject(e);
+            });
         });
     };
 
@@ -190,9 +196,9 @@ Instagram.prototype.scrapeTagPage = function(tag){
         tag = encodeURI(tag);
 
         self._request('tag-'+tag, listURL + tag)
-            .then((response) => {
+            .then((body) => {
 
-                const data = parse(response.body);
+                const data = parse(body);
 
                 if(data &&
                     data.entry_data &&
@@ -248,7 +254,7 @@ Instagram.prototype.scrapePostPage = function(code){
         if (!code) return reject(new Error('Argument "code" must be specified'));
 
         return self._request('post-'+code, postURL + code)
-            .then(function(err, response, body){
+            .then(function(body){
                 const data = parse(body);
                 if (data) {
                     resolve(data.entry_data.PostPage[0].graphql.shortcode_media);
@@ -267,7 +273,7 @@ Instagram.prototype.scrapeLocationPage = function(id){
         if (!id) return reject(new Error('Argument "id" must be specified'));
 
         return self._request('loc-'+id, locURL + id)
-            .then(function(err, response, body){
+            .then(function(body){
                 const data = parse(body);
                 if (data) {
                     resolve(data.entry_data.LocationsPage[0].location);
