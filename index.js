@@ -195,7 +195,7 @@ Instagram.prototype.scrapeTagPage = function(tag){
 
         tag = encodeURI(tag);
 
-        self._request('tag-'+tag, listURL + tag)
+        self._request('tag-'+tag, listURL + tag + '/')
             .then((body) => {
 
                 const data = parse(body);
@@ -253,7 +253,7 @@ Instagram.prototype.scrapePostPage = function(code){
     return new Promise(function(resolve, reject){
         if (!code) return reject(new Error('Argument "code" must be specified'));
 
-        return self._request('post-'+code, postURL + code)
+        return self._request('post-'+code, postURL + code + '/')
             .then(function(body){
                 const data = parse(body);
                 if (data) {
@@ -272,7 +272,7 @@ Instagram.prototype.scrapeLocationPage = function(id){
     return new Promise(function(resolve, reject){
         if (!id) return reject(new Error('Argument "id" must be specified'));
 
-        return self._request('loc-'+id, locURL + id)
+        return self._request('loc-'+id, locURL + id + '/')
             .then(function(body){
                 const data = parse(body);
                 if (data) {
